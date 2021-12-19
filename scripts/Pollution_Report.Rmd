@@ -1,0 +1,406 @@
+---
+title: "Pollution Report"
+author: "Subhrajyoty Roy, Udit Surya Saha"
+date: "28 June 2018"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Introduction
+
+  This report is about a primary analysis of the Pollution dataset provided by West Bengal Pollution Control Board (WBPCB) and Central Pollution Control Board (CPCB), which contains the measurement of PM10 (Particular Matter), $SO_2$ (Sulphar dioxide) and $NO_2$ (Nitrogen dioxide), measured at the rooftop of Asansol Municipal Corporation. The dataset consists of irregularly spaced measurement of the above from January, 2001 to December, 2011 and from October, 2012 to January, 2017. This report only concerns about the analysis of PM10.
+  
+## Primary Scrutiny
+
+  A primary scrutiny of the dataset shows that in row 169 of sheet 1, the date has been wrongly assigned as 28/05/2008 which should have been 28/05/2006. In row 18 of sheet 2, the date has been wrongly assigned as 13.10.2012 which should have been 13.11.2012. Also, row 63 of the sheet 1 of the data contains errorneous entry in so2 shift4 column. Also, row 255 contains error in the column of No2 shift4. These errors have been manually corrected.
+  
+
+## Preprocessing and Necessary Assumptions
+
+  Some preprocessing has been done on the data to convert it into a necessary format. These includes;
+  
+* Removing the blank rows and rows containing metadata (unnecessary headings at the top of excel sheets).
+
+* Reading only the necessary columns. (Also, it is worth to mention that the sheet 1 contains the data about SPM and RPM. Since, RPM (respirable particulate matter) are particulate matters (PM) of size 10 micrometers or smaller, it is regarded as PM10).
+
+* Transforming the dataset into a time series by putting the data of shift1, shift2 and shift3 for a particular day, in this order.
+
+* Since, the data about the time of measurements in various shifts are unavailable, it is assumed each shift divides the whole day in three equal parts. Therefore, shift2 measurement is assumed to be taken 8 hours after shift1 measurement, and similarly, shift3 measurement is assumed to be taken 8 hours after shift2 measurement.
+
+  Let us take a look at the processed dataset.
+
+```{r}
+PM10data <- read.csv('PM10_All_shifts.csv')
+names(PM10data) <- c("DateTime","PM.Values")
+head(PM10data, 10)
+```
+
+  The "Datetime" column consists of the number of hours of a shift initializing the first observation time as origin. The "PM.Values" column contains the measurements of PM10.
+  
+```{r}
+#This is some necessary variable creation
+PM10data$DailyAvg <- 'NA'
+
+#Create the daily averages
+AvgIndex <- seq(2,nrow(PM10data), by=3)
+
+for (i in AvgIndex) {
+  PM10data$DailyAvg[i] <- mean(PM10data$PM.Values[(i-1):(i+1)])
+}
+
+##############################################################
+
+#changing the datetime into number of days and reconstructing the shift time
+
+PM10data$ShiftTime <- as.factor(((PM10data$DateTime %% 24)/8)+1)
+
+PM10data$DateTime <- (PM10data$DateTime/24)
+```
+
+  Let us take a look at the data graphically.
+  
+```{r}
+inputPanel(
+  sliderInput("start_1", label = "Starting Point",
+              min = 1, max = 3513, value = 1,step = 100),
+  sliderInput("span_1", label = "Span",
+              min = 100, max = 3513, value = 3513, step = 250)
+)
+
+renderPlot({
+  plot(PM10data$DateTime[input$start_1:(input$start_1+input$span_1)],
+       PM10data$PM.Values[input$start_1:(input$start_1+input$span_1)],
+       type = "l", xlab = "Number of Days", ylab = "PM10 Measurements",
+       main = "PM10 Measurements as Time Series")
+})
+```
+
+
+## Analysis
+
+  The analysis contains two main steps.
+
+* Using a smoothing technique to smooth out the inter-daily variations, so that the smoother captures only fluctuations of daily averages.
+
+* The residual part should capture the behavior of each shift individually and some random noise. Therefore, the residuals are split across different shifts and analyzed seperately.
+
+  Firstly, we use a Gaussian Kernel smoothing technique to estimate the fluctuations of daily averages. 
+  
+```{r}
+inputPanel(
+  sliderInput("start_2", label = "Starting Point",
+              min = 1, max = 3513, value = 1,step = 100),
+  sliderInput("span_2", label = "Span",
+              min = 100, max = 1000, value = 100, step = 50),
+  sliderInput("band_2", label = "Bandwidth Level",
+              min = 1, max = 15, step = 0.5, value = 1)
+)
+
+renderPlot({
+  smoothed <- ksmooth(PM10data$DateTime, PM10data$PM.Values, kernel = "normal",
+                      bandwidth = input$band_2)
+  
+  plot(PM10data$DateTime[input$start_2:(input$start_2+input$span_2)],
+       PM10data$PM.Values[input$start_2:(input$start_2+input$span_2)],
+       type = "l", xlab = "Number of Days", ylab = "PM10 Measurements",
+       main = "PM10 Measurements as Time Series", col=rgb(0,0,0,0.7))
+  
+  points(smoothed, type = "l", col="red")
+  
+  points(PM10data$DateTime[AvgIndex], PM10data$DailyAvg[AvgIndex],
+         type = "o", col="blue")
+  
+  legend("topleft",legend = c("PM10 Measurements","Smoothed Curve","Daily Averages"),col=c("black","red","blue"), lwd=1)
+}, height = 500)
+```
+
+
+  It seems that smoothing with a bandwidth of 4.5 should be good enough for our purpose. 
+
+  To check whether the bandwidth selection is "good", we plot the residual.
+  
+```{r}
+daily_smoother <- ksmooth(PM10data$DateTime, PM10data$PM.Values, 
+                          bandwidth = 4.5, kernel = "normal",
+                          x.points = PM10data$DateTime)
+
+PM10data$DailyError <- PM10data$PM.Values - daily_smoother$y[daily_smoother$x==PM10data$DateTime]
+
+inputPanel(
+  sliderInput("start_3", label = "Starting Point",
+              min = 1, max = 3513, value = 1,step = 100),
+  sliderInput("span_3", label = "Span",
+              min = 100, max = 3513, value = 3513, step = 250)
+)
+
+renderPlot({
+  plot(PM10data$DateTime[input$start_3:(input$start_3+input$span_3)],
+       PM10data$DailyError[input$start_3:(input$start_3+input$span_3)],
+       type = "l", xlab = "Number of Days", ylab = "Residuals after Smoothing",
+       main = "Residual Plot")
+  
+  abline(h=0, col="blue", lwd=2)
+})
+
+```
+
+  The residual plot, fortuantely, does not exihibit any definite pattern. Therefore, we may assume that our bandwidth selection is good. Also, notice that the variabilty of the residuals is large in the first part, then it decreases in the middle of the year and increases again. This suggests a use of robust smoothing technique to analyze the residuals.
+  
+  Now, we split up the residuals based on their shifts and plot them individually. After that, we try to explore the pattern in residuals corresponding to a single shift and use robust smoothing technique (namely local polynomial LAD regression smoother) to find out how the general behavior of that shift differs from the general behavior of the day.
+  
+```{r}
+ShiftList <- split(PM10data, PM10data$ShiftTime)
+
+smoothed_plot <- function(i, bandwidth, startpoint, span){
+  smoothed <- loess(ShiftList[[i]]$DailyError ~ ShiftList[[i]]$DateTime, 
+                      family = "symmetric",
+                      span = bandwidth)
+  plot(ShiftList[[i]]$DateTime[startpoint:(startpoint+span)],
+       ShiftList[[i]]$DailyError[startpoint:(startpoint+span)], 
+       type = "l", col=rgb(0,0,0,0.7), xlab = "", ylab = "")
+  points(ShiftList[[i]]$DateTime[startpoint:(startpoint+span)],
+         smoothed$fitted[startpoint:(startpoint+span)], 
+         type = "l", col="red",lwd=2)
+  abline(h=0, col="blue")
+  title(xlab = "Number of Days",ylab = "Shift specific Residuals",
+        main = "Residual Plot for different Shifts")
+}
+
+inputPanel(
+  selectInput("shift", label = "Shift Id", choices = c(1,2,3)),
+  
+  sliderInput("start_4", label = "Starting Point",
+              min = 1, max = 1171, value = 1,step = 100),
+  sliderInput("span_4", label = "Span",
+              min = 100, max = 1171, value = 600, step = 50),
+  sliderInput("band_4", label = "Bandwidth Level",
+              min = 0.01, max = 0.15, step = 0.005, value = 0.1)
+)
+
+
+renderPlot({
+  smoothed_plot(input$shift, input$band_4, input$start_4, input$span_4)
+})
+
+```
+
+  We fit the robust smoothing to these residuals of different shifts, with bandwidths 0.06, 0.08 and 0.09 respectively. These smoothed value over the residuals are added with the daily smoothed values, to procure the estimate of PM10 values at different time points. The residual plots for robust smoothing for individual shifts are given as follows:
+  
+```{r}
+shift1_smoother <- loess(ShiftList[[1]]$DailyError ~ ShiftList[[1]]$DateTime, 
+                         family = "symmetric",
+                         span = 0.06)
+
+
+shift2_smoother <- loess(ShiftList[[2]]$DailyError ~ ShiftList[[2]]$DateTime, 
+                         family = "symmetric",
+                         span = 0.08)
+
+
+shift3_smoother <- loess(ShiftList[[3]]$DailyError ~ ShiftList[[3]]$DateTime, 
+                         family = "symmetric",
+                         span = 0.09)
+shiftsmoothed_all <- list(shift1_smoother, shift2_smoother, shift3_smoother)
+
+PM10data$Estimate <- daily_smoother$y[daily_smoother$x==PM10data$DateTime]
+
+for (i in 1:nrow(PM10data)){
+  PM10data$Estimate[i] <- PM10data$Estimate[i] + shiftsmoothed_all[[PM10data$ShiftTime[i]]]$fitted[ceiling(i/3)]
+}
+
+inputPanel(
+  selectInput("shift_a",label = "Shift Id", choices = c(1,2,3))
+)
+
+renderPlot({
+  plot(resid(shiftsmoothed_all[[as.numeric(input$shift_a)]]), type = "l", 
+       xlim = c(0,1200), ylim = c(-150,220), ylab = "Residuals")
+  abline(h=0, col="blue", lwd=2)
+})
+
+```
+
+  Finally we plot the estimates along with the original data to see how good the estimates really are.
+  
+```{r}
+inputPanel(
+  sliderInput("start_5", label = "Starting Point",
+              min = 1, max = 3513, value = 1,step = 100),
+  sliderInput("span_5", label = "Span",
+              min = 100, max = 500, value = 100, step = 50)
+)
+
+renderPlot({
+  plot(PM10data$DateTime[input$start_5:(input$start_5+input$span_5)],
+       PM10data$PM.Values[input$start_5:(input$start_5+input$span_5)],
+       type = "l", xlab = "Number of Days", ylab = "PM10 Measurements",
+       main = "PM10 Measurements as Time Series")
+  
+  points(PM10data$DateTime[input$start_5:(input$start_5+input$span_5)],
+         PM10data$Estimate[input$start_5:(input$start_5+input$span_5)],
+         type = "l", col="red")
+  legend("topleft", legend = c("Original Data","Estimates"), 
+         col = c("black","red"), lwd = 2)
+})
+```
+
+
+Now, let's look at the plot of autocorrelation function for different shifts.
+
+```{r}
+inputPanel(
+  selectInput("shift_b",label = "Shift",choices = c(1:3)),
+  sliderInput("lag_span", label = "Maximum Lag", min = 30, max=380, step=25, value = 100)
+)
+
+renderPlot({
+  acf(ShiftList[[input$shift_b]]$DailyError, lag.max=input$lag_span)
+})
+```
+
+ We observe some interesting repeatative periodic patterns here.
+ 
+ Now, we consider the periodicity of the shift-specific errors.
+ 
+```{r}
+inputPanel(
+  selectInput("shift_c", label="Shift", choices = c(1:3)),
+  sliderInput("max_freq", label = "Maximum Frequency", min = 0.025, max= 1, step = 0.05, value = 1)
+)
+
+renderPlot({
+  model <- spectrum(ShiftList[[input$shift_c]]$DailyError,log="no", plot=FALSE)
+  plot(model, log="no", xlim = c(0,input$max_freq))
+})
+```
+
+  We observe that the period should be the datetime corresponding to the inverse frequency for which the spectrum is the largest. However, since the time series is irregular, a more typical thing would be to take the weighted average of the datetimes corresponding to the inverse frequencies, where the weights are the spectrum values of those frequencies.
+  
+```{r}
+inputPanel(
+    selectInput("shift_d", label="Shift", choices = c(1:3))
+)
+
+renderDataTable({
+  model <- spectrum(ShiftList[[input$shift_d]]$DailyError,log="no", plot=FALSE)
+  model <- data.frame(freq = model$freq, spec = model$spec)
+  model <- model[order(model$spec, decreasing = TRUE)[1:5],] #we select only largest 5 specturms 
+  model$period <- ShiftList[[1]]$DateTime[1/model$freq]
+  print(model)
+})
+
+renderText({
+  print(paste("Shift ", as.character(input$shift_d)," possible Period is: ", as.character(sum(model$period*model$spec)/sum(model$spec))))
+})
+```
+
+
+
+## Similar Analysis for $SO_2$
+
+```{r eval=FALSE}
+so2data <- read.csv('so2_All_shifts.csv')
+head(so2data, 10)
+so2data$ShiftTime <- as.factor(((so2data$DateTime %% 24)/4)+1)
+so2data$DateTime <- (so2data$DateTime/24)
+so2_avg_time <- c()
+so2_avg_values <- c()
+for (i in (seq(1, 7014, by=6))) {
+  so2_avg_time <- c(so2_avg_time, mean(so2data$DateTime[i:(i+5)]))
+  so2_avg_values <- c(so2_avg_values, mean(so2data$so2.Values[i:(i+5)]))
+}
+
+
+inputPanel(
+  sliderInput("start_6", label = "Starting Point",
+              min = 1, max = 7014, value = 1,step = 100),
+  sliderInput("span_6", label = "Span",
+              min = 100, max = 2000, value = 100, step = 50),
+  sliderInput("band_6", label = "Bandwidth Level",
+              min = 1, max = 15, step = 0.5, value = 1)
+)
+
+renderPlot({
+  smoothed <- ksmooth(so2data$DateTime, so2data$so2.Values, kernel = "normal", bandwidth = input$band_6)
+  
+  plot(so2data$DateTime[input$start_6:(input$start_6+input$span_6)],
+       so2data$so2.Values[input$start_6:(input$start_6+input$span_6)],
+       type = "l", xlab = "Number of Days", ylab = "So2 Measurements",
+       main = "So2 Measurements as Time Series", col=rgb(0,0,0,0.7))
+  
+  points(smoothed, type = "l", col="red")
+  
+  points(so2_avg_time, so2_avg_values,
+         type = "o", col="blue")
+  
+  legend("topleft",legend = c("so2 Measurements","Smoothed Curve","Daily Averages"),col=c("black","red","blue"), lwd=1)
+}, height = 500)
+
+```
+
+
+## Similar Analysis for $NO_2$
+
+```{r eval=FALSE}
+No2data <- read.csv('No2_All_shifts.csv')
+head(No2data, 10)
+No2data$ShiftTime <- as.factor(((No2data$DateTime %% 24)/4)+1)
+No2data$DateTime <- (No2data$DateTime/24)
+No2_avg_time <- c()
+No2_avg_values <- c()
+for (i in (seq(1, 7014, by=6))) {
+  No2_avg_time <- c(No2_avg_time, mean(No2data$DateTime[i:(i+5)]))
+  No2_avg_values <- c(No2_avg_values, mean(No2data$No2.Values[i:(i+5)]))
+}
+
+
+inputPanel(
+  sliderInput("start_7", label = "Starting Point",
+              min = 1, max = 7014, value = 1,step = 100),
+  sliderInput("span_7", label = "Span",
+              min = 100, max = 2000, value = 100, step = 50),
+  sliderInput("band_7", label = "Bandwidth Level",
+              min = 1, max = 15, step = 0.5, value = 1)
+)
+
+renderPlot({
+  smoothed <- ksmooth(No2data$DateTime, No2data$No2.Values, kernel = "normal", bandwidth = input$band_7)
+  
+  plot(No2data$DateTime[input$start_7:(input$start_7+input$span_7)],
+       No2data$No2.Values[input$start_7:(input$start_7+input$span_7)],
+       type = "l", xlab = "Number of Days", ylab = "No2 Measurements",
+       main = "No2 Measurements as Time Series", col=rgb(0,0,0,0.7))
+  
+  points(smoothed, type = "l", col="red")
+  
+  points(No2_avg_time, No2_avg_values,
+         type = "o", col="blue")
+  
+  legend("topleft",legend = c("No2 Measurements","Smoothed Curve","Daily Averages"),col=c("black","red","blue"), lwd=1)
+}, height = 500)
+
+```
+
+
+## Conclusions
+
+  The conclusion from the above analysis are described in the following points.
+  
+* The pollution level in the shift 1 is mostly lower than the daily average pollution level. It is lower in winters and rises slightly above the daily average pollution level in middle of the year.
+
+* The pollution level in the shift 2 is mostly above than the daily average pollution level. It is more in winters and falls about the daily average pollution level in middle of the year.
+
+* The pollution level in the shift 3 follows a pattern of rising and falling. It is more in winters (beginning and end of the year) and falls sharply in the middle of the years. However, the general trend of this repetative pattern appears to be increasing. Hence, in first few years of the given dataset, the shift 3 seems to be mostly below the daily average level of pollution, whereas after that, shift 3 remains to be mostly above the daily average level of pollution.
+
+# THANK YOU
+
+
+
+
+<br style="line-height: 25em">
+
+

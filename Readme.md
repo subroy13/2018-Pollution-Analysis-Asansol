@@ -1,0 +1,3 @@
+# Analysis of Pollution Patterns in Asansol
+
+This presentation is a follow up for the analysis of the Pollution dataset provided by West Bengal Pollution Control Board (WBPCB) and Central Pollution Control Board (CPCB), which contains the measurement of PM10 (Particular Matter), SO2 (Sulphar dioxide) and NO2 (Nitrogen dioxide), measured at the rooftop of Asansol Municipal Corporation. The dataset consists of irregularly spaced measurement of the above from January, 2005 to December, 2011 and from October, 2012 to January, 2017.

@@ -1,0 +1,497 @@
+---
+title: "Pollution Report ($SO_2$)"
+author: "Subhrajyoty Roy, Udit Surya Saha"
+date: "24 July 2018"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Introduction
+
+  This report is about a primary analysis of the Pollution dataset provided by West Bengal Pollution Control Board (WBPCB) and Central Pollution Control Board (CPCB), which contains the measurement of PM10 (Particular Matter), $SO_2$ (Sulphar dioxide) and $NO_2$ (Nitrogen dioxide), measured at the rooftop of Asansol Municipal Corporation. The dataset consists of irregularly spaced measurement of the above from January, 2001 to December, 2011 and from October, 2012 to January, 2017. This report only concerns about the analysis of So2.
+  
+## Primary Scrutiny
+
+  A primary scrutiny of the dataset shows that in row 169 of sheet 1, the date has been wrongly assigned as 28/05/2008 which should have been 28/05/2006. In row 18 of sheet 2, the date has been wrongly assigned as 13.10.2012 which should have been 13.11.2012. Row 255 contains error in the column of So2 shift4. These errors have been manually corrected.
+  
+
+## Preprocessing and Necessary Assumptions
+
+  Some preprocessing has been done on the data to convert it into a necessary format. These includes;
+  
+* Removing the blank rows and rows containing metadata (unnecessary headings at the top of excel sheets).
+
+* Reading only the necessary columns.
+
+* Transforming the dataset into a time series by putting the data of shift1, shift2, shift3, shift4, shift5 and shift6 for a particular day, in this order.
+
+* Since, the data about the time of measurements in various shifts are unavailable, it is assumed each shift divides the whole day in three equal parts. Therefore, shift2 measurement is assumed to be taken 4 hours after shift1 measurement, and similarly, shift3 measurement is assumed to be taken 4 hours after shift2 measurement and so on.
+
+* The regulation level of $SO_2$ is taken as 80 microgram per cubic meter as specified by the source: https://www.transportpolicy.net/standard/india-air-quality-standards/ . 
+
+  Let us take a look at the processed dataset.
+
+```{r}
+so2data <- read.csv('so2_All_shifts.csv')
+head(so2data, 10)
+```
+
+  The "Datetime" column consists of the number of hours of a shift initializing the first observation time as origin. The "so2.Values" column contains the measurements of so2.
+  
+```{r}
+so2data$ShiftTime <- as.factor(((so2data$DateTime %% 24)/4)+1)
+
+so2data$DateTime <- (so2data$DateTime/24)
+
+so2_Avg_Date <- c()
+so2_Avg_Values <- c()
+
+for (i in seq(1, 7014, by=6)){
+  so2_Avg_Date <- c(so2_Avg_Date, mean(so2data$DateTime[i:(i+5)]))
+  so2_Avg_Values <- c(so2_Avg_Values, mean(so2data$so2.Values[i:(i+5)]))
+}
+
+```
+
+  Let us take a look at the data graphically.
+  
+```{r}
+inputPanel(
+  sliderInput("start_1", label = "Starting Point",
+              min = 1, max = 7014, value = 1,step = 100),
+  sliderInput("span_1", label = "Span",
+              min = 100, max = 7014, value = 3513, step = 250),
+  checkboxInput("show_lim", label = "Show Regulation", value = FALSE)
+)
+
+renderPlot({
+  if (input$show_lim) {
+    lim = 100
+  }
+  else {
+    lim = 35
+  }
+  
+  plot(so2data$DateTime[input$start_1:(input$start_1+input$span_1)],
+       so2data$so2.Values[input$start_1:(input$start_1+input$span_1)],
+       type = "l", xlab = "Number of Days", ylab = "so2 Measurements",
+       main = "so2 Measurements as Time Series", ylim = c(0, lim))
+  
+  abline(h=80, col="red", lwd=2)
+})
+```
+
+
+  Just from this, we can observe that the periodic movement in the time series is more clear in later year than in the first few years. Also, there seems to be an increasing trend in So2 measurements.
+
+## Analysis
+
+  The analysis contains two main steps.
+
+* Using a smoothing technique to smooth out the inter-daily variations, so that the smoother captures only fluctuations of daily averages.
+
+* The residual part should capture the behavior of each shift individually and some random noise. Therefore, the residuals are split across different shifts and analyzed seperately.
+
+  Firstly, we use a Gaussian Kernel smoothing technique to estimate the fluctuations of daily averages. 
+  
+```{r}
+inputPanel(
+  sliderInput("start_2", label = "Starting Point",
+              min = 1, max = 3513, value = 1,step = 100),
+  sliderInput("span_2", label = "Span",
+              min = 100, max = 1000, value = 100, step = 50),
+  sliderInput("band_2", label = "Bandwidth Level",
+              min = 1, max = 15, step = 0.5, value = 1)
+)
+
+renderPlot({
+  smoothed <- ksmooth(so2data$DateTime, so2data$so2.Values, kernel = "normal",
+                      bandwidth = input$band_2)
+  
+  plot(so2data$DateTime[input$start_2:(input$start_2+input$span_2)],
+       so2data$so2.Values[input$start_2:(input$start_2+input$span_2)],
+       type = "l", xlab = "Number of Days", ylab = "so2 Measurements",
+       main = "so2 Measurements as Time Series", col=rgb(0,0,0,0.7))
+  
+  points(smoothed, type = "l", col="red")
+  
+  points(so2_Avg_Date, so2_Avg_Values, type = "o", col="blue")
+  
+  legend("topleft",legend = c("so2 Measurements","Smoothed Curve","Daily Averages"),col=c("black","red","blue"), lwd=1)
+}, height = 500)
+```
+
+
+  It seems that smoothing with a bandwidth of 4 should be good enough for our purpose. 
+
+  To check whether the bandwidth selection is "good", we plot the residual.
+  
+```{r}
+daily_smoother <- ksmooth(so2data$DateTime, so2data$so2.Values, 
+                          bandwidth = 4, kernel = "normal",
+                          x.points = so2data$DateTime)
+
+so2data$DailyError <- so2data$so2.Values - daily_smoother$y[daily_smoother$x==so2data$DateTime]
+
+inputPanel(
+  sliderInput("start_3", label = "Starting Point",
+              min = 1, max = 7014, value = 1,step = 100),
+  sliderInput("span_3", label = "Span",
+              min = 100, max = 7014, value = 3513, step = 250)
+)
+
+renderPlot({
+  plot(so2data$DateTime[input$start_3:(input$start_3+input$span_3)],
+       so2data$DailyError[input$start_3:(input$start_3+input$span_3)],
+       type = "l", xlab = "Number of Days", ylab = "Residuals after Smoothing",
+       main = "Residual Plot")
+  
+  abline(h=0, col="blue", lwd=2)
+})
+
+```
+
+  The residual plot, fortuantely, does not exihibit any definite pattern. Therefore, we may assume that our bandwidth selection is good. Also, notice that the variabilty of the residuals is large in the first part, then it decreases in the middle of the year and increases again. This suggests a use of robust smoothing technique to analyze the residuals.
+  
+  Now, we try to explore the properties of the daily smoother curve, and decompose it to find a periodic movement, other than the usual trend. 
+  
+```{r message = FALSE, warning=FALSE, fig.height=8}
+library(zoo)
+
+## the difference in 2005-01-01 to 2017-01-31 is 4412 days.
+
+daily_smoother_regular <- ksmooth(so2data$DateTime, so2data$so2.Values, bandwidth = 3.5, kernel = "normal", x.points = seq(0.416, 4409.416, length.out = 4412))
+
+smoothed_ts <- ts(na.approx(daily_smoother_regular$y), frequency = 365)
+
+model <- decompose(smoothed_ts)
+plot(model)
+
+seasonal_coeff <- data.frame(dates = seq(as.Date("2001-01-01"), as.Date("2001-12-31"), by = "days"), coeff = model$seasonal[1:365])
+
+seasonal_coeff$month <- months(seasonal_coeff$dates)
+coeffs = sapply(split(seasonal_coeff$coeff, seasonal_coeff$month), mean)
+print(sort(coeffs))
+```
+  
+  We see that the general periodic behavior is small in magnitude, the So2 measurements are less in June, July and August while it is more in the months of Winter.
+  
+  Now, we split up the residuals based on their shifts and plot them individually. After that, we try to explore the pattern in residuals corresponding to a single shift and use robust smoothing technique (namely local polynomial LAD regression smoother) to find out how the general behavior of that shift differs from the general behavior of the day.
+  
+```{r}
+ShiftList <- split(so2data, so2data$ShiftTime)
+
+smoothed_plot <- function(i, bandwidth, startpoint, span){
+smoothed <- loess(ShiftList[[i]]$DailyError ~ ShiftList[[i]]$DateTime, 
+                      family = "symmetric",
+                      span = bandwidth)
+  plot(ShiftList[[i]]$DateTime[startpoint:(startpoint+span)],
+       ShiftList[[i]]$DailyError[startpoint:(startpoint+span)], 
+       type = "l", col=rgb(0,0,0,0.7), xlab = "", ylab = "")
+  points(ShiftList[[i]]$DateTime[startpoint:(startpoint+span)],
+         smoothed$fitted[startpoint:(startpoint+span)], 
+         type = "l", col="red",lwd=2)
+  abline(h=0, col="blue")
+  title(xlab = "Number of Days",ylab = "Shift specific Residuals",
+        main = "Residual Plot for different Shifts")
+  ## some year indicators
+  abline(v = (c(1:12)*365))
+  text(x = (c(1:12)*365)-182 , y = rep(5, 12), labels = as.character(c(2005:2016)), cex = 1.5, col = "blue")
+}
+
+inputPanel(
+  selectInput("shift", label = "Shift Id", choices = c(1:6)),
+  
+  sliderInput("start_4", label = "Starting Point",
+              min = 1, max = 1169, value = 1,step = 100),
+  sliderInput("span_4", label = "Span",
+              min = 100, max = 1169, value = 600, step = 50),
+  sliderInput("band_4", label = "Bandwidth Level",
+              min = 0.01, max = 0.6, step = 0.005, value = 0.1)
+)
+
+
+renderPlot({
+  smoothed_plot(input$shift, input$band_4, input$start_4, input$span_4)
+})
+
+```
+
+  We observe that a trend bandwidth of 0.2 is good for general trend in all the shifts. Also, from the general trend pattern, we get that shift1 was more than daily averages till 2008. From 2009 and so on, the so2 measures in shift1 falls below daily averages. Shift2 residuals are mostly positive, i.e. shift2 measurements are more than daily averages. However, at the end of 2014, so2 measurements in shift2 falls below the daily averages, and it stays effective for 2015 and 2016 also. Currently, the trend is increasing and we should expect shift2 measurements to be more than daily averages in 2017 and so on. Shift3 and shift4, both measures are more than daily averages. Comparative to shift2 measures, shift3 measures are higher. The genrral trend of shift5 measures is increasing. Before middle of 2009, shift5 measures used to be less than daily averages, whereas it increases to be more than daily averages afterwards 2009 by a small margin, and in 2014 by a large margin. The measurements of shift6 residuals in so2 is extremely negative, indicating that shift6 measurements are a lot lower comparative to daily averages.
+  
+  
+We check the residuals of shift specific errors to see whether only eliminating the general trend, a clear periodic pattern emerges.
+
+```{r}
+smoothed_periodics <- function(i, bandwidth, startpoint, span, periodic){
+smoothed <- loess(ShiftList[[i]]$DailyError ~ ShiftList[[i]]$DateTime, 
+                      family = "symmetric",
+                      span = bandwidth)
+periodics <- loess(smoothed$residuals ~ (ShiftList[[i]]$DateTime%%365),
+                  span = periodic, family = "symmetric")
+
+  plot(ShiftList[[i]]$DateTime[startpoint:(startpoint+span)],
+         smoothed$residuals[startpoint:(startpoint+span)], 
+         type = "l", xlab = "", ylab = "", ylim = c(-6, 10))
+  
+  y = periodics$fitted[ShiftList[[i]]$DateTime%%365 == periodics$x]
+  points(ShiftList[[i]]$DateTime, y, col="blue", type="l")
+  
+  title(xlab = "Number of Days",ylab = "Shift specific Errors Detrended",
+        main = "Detrend Residual Plot for different Shifts")
+  
+  ## some year indicators
+  abline(v = (c(1:12)*365))
+  text(x = (c(1:12)*365)-182 , y = rep(10, 12), labels = as.character(c(2005:2016)), cex = 1.5, col = "blue")
+}
+
+inputPanel(
+  selectInput("shift_4a", label = "Shift Id", choices = c(1:6)),
+  
+  sliderInput("start_4a", label = "Starting Point",
+              min = 1, max = 1169, value = 1,step = 100),
+  sliderInput("span_4a", label = "Span",
+              min = 100, max = 1169, value = 600, step = 50),
+  sliderInput("band_4a", label = "Bandwidth Level of Trend",
+              min = 0.01, max = 0.6, step = 0.005, value = 0.11),
+  sliderInput("band_4b", label = "Badwidth Level of Periodicity",
+              min = 0.01, max = 2, step = 0.01, value = 1)
+)
+
+
+renderPlot({
+  smoothed_periodics(input$shift_4a, input$band_4a, input$start_4a, input$span_4a, input$band_4b)
+})
+
+```
+
+
+  To capture information about periodicity, we observe that shift1 and shift6 has prominent periodic pattern. For shift3 and shift5, the random noise is extremely large in magnitude that no meaningful periodic pattern can be established.
+   
+   Calculating the seasonal coefficients of this shift specific errors, we obtain;
+   
+```{r comment="", results='asis'}
+spans = c(0.5, 0.4, 0.5, 0.8, 0.2, 0.3)
+period_df = data.frame(date = seq(as.Date('2001-01-01'), as.Date('2001-12-31'), by = 1))
+period_df$month = months(period_df$date)
+
+for (i in 1:6) {
+  smoothed <- loess(ShiftList[[i]]$DailyError ~ ShiftList[[i]]$DateTime, 
+                      family = "symmetric", span = 0.2)
+  periodics <- loess(smoothed$residuals ~ (ShiftList[[i]]$DateTime%%365),
+                  span = spans[i], family = "symmetric")
+  
+  y = rep(NA, 365)
+  for (j in 1:365) {
+    y[j] = periodics$fitted[which(floor(periodics$x) == j)[1]]
+  }
+  
+  period_df = cbind(period_df, y)
+}
+
+names(period_df) = c('date','month','shift1','shift2','shift3','shift4',
+                     'shift5','shift6')
+my_table = t(sapply(split(period_df[-c(1,2)], period_df$month), colMeans, na.rm=TRUE))
+
+knitr::kable(my_table)
+```
+
+  
+  Therefore, our final model is like this:
+  
+  so2 Measures = Daily Smoother + Shift specific error trend + Shift specific error seasonal coefficient.
+  
+  Now, we plot the estimate along with the original estimates to see how go it is.
+  
+```{r}
+so2data$FinalEstimate = daily_smoother$y[daily_smoother$x == so2data$DateTime]
+
+smoothed_shift1 <- loess(ShiftList[[1]]$DailyError ~ ShiftList[[1]]$DateTime, 
+                      family = "symmetric", span = 0.2)
+smoothed_shift2 <- loess(ShiftList[[2]]$DailyError ~ ShiftList[[2]]$DateTime, 
+                      family = "symmetric", span = 0.2)
+smoothed_shift3 <- loess(ShiftList[[3]]$DailyError ~ ShiftList[[3]]$DateTime, 
+                      family = "symmetric", span = 0.2)
+smoothed_shift4 <- loess(ShiftList[[4]]$DailyError ~ ShiftList[[4]]$DateTime, 
+                      family = "symmetric", span = 0.2)
+smoothed_shift5 <- loess(ShiftList[[5]]$DailyError ~ ShiftList[[5]]$DateTime, 
+                      family = "symmetric", span = 0.2)
+smoothed_shift6 <- loess(ShiftList[[6]]$DailyError ~ ShiftList[[6]]$DateTime, 
+                      family = "symmetric", span = 0.2)
+smoothers_list = list(smoothed_shift1, smoothed_shift2, smoothed_shift3, smoothed_shift4, smoothed_shift5, smoothed_shift6)
+
+so2data$Months = months(floor(so2data$DateTime) + as.Date('2001-01-01'))
+
+for (i in 1:nrow(so2data)){
+  so2data$FinalEstimate[i] <- so2data$FinalEstimate[i] + smoothers_list[[so2data$ShiftTime[i]]]$fitted[ceiling(i/6)]
+}
+
+for (i in 1:nrow(so2data)) {
+  so2data$FinalEstimate[i] <- so2data$FinalEstimate[i] + my_table[so2data$Months[i] == rownames(my_table), so2data$ShiftTime[i]]
+}
+
+
+
+##########################################
+inputPanel(
+  sliderInput("start_5", label = "Starting Point",
+              min = 1, max = 7714, value = 1,step = 100),
+  sliderInput("span_5", label = "Span",
+              min = 100, max = 7714, value = 100, step = 50),
+  checkboxInput("displaymonths", label = "Display Months", value = FALSE),
+  checkboxInput("show_lim_1", label = "Show Regulation Level", value = FALSE)
+)
+
+renderPlot({
+  if (input$show_lim_1) {
+    lim = 100
+  }
+  
+  else {
+    lim = 30
+  }
+  
+  plot(so2data$DateTime[input$start_5:(input$start_5+input$span_5)],
+       so2data$so2.Values[input$start_5:(input$start_5+input$span_5)],
+       type = "l", xlab = "Number of Days", ylab = "so2 Measurements",
+       main = "so2 Measurements as Time Series", ylim = c(-2, lim))
+  
+  points(so2data$DateTime[input$start_5:(input$start_5+input$span_5)],
+         so2data$FinalEstimate[input$start_5:(input$start_5+input$span_5)],
+         type = "l", col="blue")
+  
+  abline(h=80, col="red", lwd=2)
+  for (i in 1:12){
+    abline(v=(365*i))
+    text((365*i)-182, lim, as.character(i+2004))
+    if (input$displaymonths) {
+      for (j in 1:12){
+        abline(v = ((365*(i-1))+(j*30)), col = "darkgreen", lty = 2)
+        text(((365*(i-1))+(j*30) - 20), -2, month.name[j])
+      }
+    }
+  }
+  
+  legend("topleft", legend = c("Original Data","Estimates","so2 Tolerance Level"), 
+         col = c("black","blue", "red"), lwd = 2)
+})
+```
+
+  We see that only in winters, the so2 measurements exceeds the regulation level.
+  
+Now, let's look at the plot of autocorrelation function for different shifts.
+
+```{r}
+
+shift1_full_data <- data.frame(DateTime = 0:4409, DailyError=NA)
+shift2_full_data <- data.frame(DateTime = 0:4409, DailyError=NA)
+shift3_full_data <- data.frame(DateTime = 0:4409, DailyError=NA)
+shift4_full_data <- data.frame(DateTime = 0:4409, DailyError=NA)
+shift5_full_data <- data.frame(DateTime = 0:4409, DailyError=NA)
+shift6_full_data <- data.frame(DateTime = 0:4409, DailyError=NA)
+
+Shift_Full_List <- list(shift1_full_data, shift2_full_data, shift3_full_data,
+                        shift4_full_data, shift5_full_data, shift6_full_data)
+
+for (i in 1:6){
+  for (date in 0:4409) {
+  if (date %in% ShiftList[[1]]$DateTime) {
+    Shift_Full_List[[i]]$DailyError[which(Shift_Full_List[[i]]$DateTime==date)] = ShiftList[[i]]$DailyError[which(floor(ShiftList[[i]]$DateTime)==date)]
+    }
+  }
+}
+
+```
+
+
+```{r}
+inputPanel(
+  selectInput("shift_b",label = "Shift",choices = c(1:6)),
+  sliderInput("lag_span", label = "Maximum Lag", min = 30, max=380, step=25, value = 100),
+  checkboxInput("partial","Partial AutoCorrelation Function",value = FALSE)
+)
+
+renderPlot({
+  if(input$partial){
+    pacf(ShiftList[[input$shift_b]]$DailyError, lag.max=input$lag_span)
+  }
+  
+  else {
+   acf(Shift_Full_List[[as.numeric(input$shift_b)]]$DailyError, lag.max=input$lag_span, na.action = na.pass) 
+  }
+    
+})
+
+```
+
+  From autocorrelation function, though the anomalies of specific shifts seems to have extremely high correlation, showing an indication that these stays for a long time. However, partial autocorrelation function gives us a clear picture that these anomalies have an effect over next three to four weeks, varying from shift to shift.
+  
+  Finally, we consider the distribution of the errors and plot them. Finally, we perform a chi-squared goodness of fit test to see whether the error can be thought of normally distributed.
+  
+```{r message=FALSE}
+error <- so2data$so2.Values - so2data$FinalEstimate
+quantile(error)
+
+hist(error, breaks = 25, freq = FALSE)
+
+error <- (error - mean(error))/sd(error)
+qqnorm(error)
+abline(a=0, b=1, col = "blue", lwd=2)
+
+quants <- quantile(error, probs = seq(0,1,0.04))
+cuts <- table(cut(error, breaks = quants))
+breaks_cdf <- pnorm(quants, mean = 0, sd = 1)
+breaks_cdf[1] <- 0
+null.probs <- filter(breaks_cdf, filter = c(1,-1), sides = 1)
+print(chisq.test(as.numeric(cuts), p=null.probs[-1]))
+```
+  
+  Since, the p-value is extremely low, with 99% confidence, we can say that the errors are not normally distributed.
+  
+## Conclusions
+
+  The conclusion from the above analysis are described in the following points.
+  
+* The general trend of so2 exhibits an increasing pattern with respect to time.
+  
+* We see that, in July, August and September, i.e. during the time of rainy season, the average value of so2 is lesser. On the other hand, in Winter, during January, February and December the average value of so2 is more.
+
+* Shift1 measurements was more than daily averages before 2009. After 2009, they showed a decreasing trend and falls below the daily averages.
+
+* shift2 measurements are more than daily averages. However, at the end of 2014, so2 measurements in shift2 falls below the daily averages, and it stays effective for 2015 and 2016 also. Currently, the trend is increasing and we should expect shift2 measurements to be more than daily averages in 2017 and so on.
+
+* Shift3 and shift4 is more than daily averages over the course of all these years. Shift3 seems to be more than shift2 in general. Both of shift3 and shift4 does not have any clear increasing or decreasing trend.
+
+* Shift5 follows an increasing trend, being less than average before 2009 and more than average after 2009. 
+
+* For shift6, the trend is increasing upto 2009 and then it stays almost stationary. However, it mostly stays lower than the daily average.
+
+* Shift1 and shift5 measurements follows a periodic pattern where it is lower than usual in late winter, and higher than usual during the late summer and early rainy season.
+
+* Shift2 follows a periodic pattern which is more than usual in late rainy season, and lower than usual in early winter.
+
+* Shift3 follows a periodic pattern being more than usual in winter and lower in summer.
+
+* Shift4 exhibits opposite periodic pattern than shift1. It is lower than usual in rainy season while higher than usual in winter.
+
+* Shift5 is more than usual in late spring and summer and lower than usual in the rainy season.
+
+* This periodic movements are extremely small compared to the yearly periodic movement of daily averages.
+
+* The so2 measurements seem under the regulation level for all the time.
+
+* Any anomalies in so2 measurements in any shifts tend to stay for about 24 to 30 days.
+
+
+# THANK YOU
+
+
+
+
+<br style="line-height: 25em">
+
+
